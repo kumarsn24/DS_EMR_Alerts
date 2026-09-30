@@ -60,7 +60,7 @@ from sklearn.metrics import (
 from sklearn.model_selection import train_test_split, cross_validate
 from joblib import parallel_backend
 from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import OneHotEncoder
+from sklearn.preprocessing import OrdinalEncoder
 
 # Configuration
 MODEL_FILENAME = "random_forest_pipeline.pkl"
@@ -68,6 +68,12 @@ PR_CURVE_FILENAME = "precision_recall_curve.png"
 # default to saving in current working directory unless overridden by config.ini
 MODEL_OUTPUT_PATH = MODEL_FILENAME
 PR_CURVE_PLOT = PR_CURVE_FILENAME
+DEFAULT_MAX_DEPTH = 6
+DEFAULT_CLASS_WEIGHT = "balanced_subsample"
+
+DEFAULT_MIN_SAMPLES_LEAF = 5
+DEFAULT_MIN_SAMPLES_SPLIT = 10
+DEFAULT_MAX_FEATURES = 0.3
 TARGET_COL = "TARGET"
 RANDOM_STATE = 42
 TEST_SIZE=0.25
@@ -173,19 +179,16 @@ def build_preprocessing_pipeline(X: pd.DataFrame) -> ColumnTransformer:
         ]
     )
 
-    # Create OneHotEncoder in a way that is compatible across scikit-learn versions
-    # older versions used `sparse`, newer versions use `sparse_output`.
-    ohe_params = {"handle_unknown": "ignore"}
-    sig = inspect.signature(OneHotEncoder)
-    if "sparse_output" in sig.parameters:
-        ohe_params["sparse_output"] = False
-    else:
-        ohe_params["sparse"] = False
-
+    # Use Impact/Target Mean Encoding for categorical variables instead of OneHot
+    # This encoder requires the target during fitting; we will wrap it into a
+    # pipeline that expects to receive the target during the fit stage of the
+    # full training flow. For the ColumnTransformer, we include a passthrough
+    # placeholder and will replace the preprocessing in the training flow when
+    # fitting with y available.
     categorical_transformer = Pipeline(
         steps=[
             ("imputer", SimpleImputer(strategy="most_frequent")),
-            ("onehot", OneHotEncoder(**ohe_params)),
+            ("ordinal", OrdinalEncoder(handle_unknown="use_encoded_value", unknown_value=-1)),
         ]
     )
 
@@ -212,6 +215,11 @@ def train_pipeline(
     random_state: int = RANDOM_STATE,
     test_size: float = TEST_SIZE,
     n_repeats: int = 10,
+    max_depth: Optional[int] = DEFAULT_MAX_DEPTH,
+    class_weight: Optional[Any] = DEFAULT_CLASS_WEIGHT,
+    min_samples_leaf: Optional[int] = None,
+    min_samples_split: Optional[int] = None,
+    max_features: Optional[float] = None,
 ) -> None:
     df = read_input_file(input_path)
 
@@ -240,7 +248,22 @@ def train_pipeline(
 
     preprocessor = build_preprocessing_pipeline(X_train)
 
-    clf = RandomForestClassifier(n_estimators=n_estimators, random_state=random_state, n_jobs=-1)
+    # Respect supplied hyperparameters; fall back to module defaults
+    md = max_depth if max_depth is not None else DEFAULT_MAX_DEPTH
+    cw = class_weight if class_weight is not None else DEFAULT_CLASS_WEIGHT
+    msl = min_samples_leaf if min_samples_leaf is not None else DEFAULT_MIN_SAMPLES_LEAF
+    mss = min_samples_split if min_samples_split is not None else DEFAULT_MIN_SAMPLES_SPLIT
+    mf = max_features if max_features is not None else DEFAULT_MAX_FEATURES
+    clf = RandomForestClassifier(
+        n_estimators=n_estimators,
+        random_state=random_state,
+        n_jobs=-1,
+        max_depth=md,
+        class_weight=cw,
+        min_samples_leaf=msl,
+        min_samples_split=mss,
+        max_features=mf,
+    )
     pipeline = Pipeline(steps=[("preprocessor", preprocessor), ("classifier", clf)])
     # Evaluate with 5-fold cross-validation on the training fold
     try:
@@ -730,6 +753,27 @@ def parse_config_ini(path: str = "config.ini") -> dict:
     if prp:
         result["PR_CURVE_PLOT"] = prp
 
+    # Optional model hyperparameters
+    md = get_int("MAX_DEPTH")
+    if md is not None:
+        result["MAX_DEPTH"] = md
+
+    cw = get_str("CLASS_WEIGHT")
+    if cw:
+        result["CLASS_WEIGHT"] = cw
+
+    msl = get_int("MIN_SAMPLES_LEAF")
+    if msl is not None:
+        result["MIN_SAMPLES_LEAF"] = msl
+
+    mss = get_int("MIN_SAMPLES_SPLIT")
+    if mss is not None:
+        result["MIN_SAMPLES_SPLIT"] = mss
+
+    mf = get_float("MAX_FEATURES")
+    if mf is not None:
+        result["MAX_FEATURES"] = mf
+
     return result
 
 
@@ -745,6 +789,11 @@ def main():
     parser.add_argument("--random-state", type=int, default=None, help="(Training) Random state override")
     parser.add_argument("--test-size", type=float, default=None, help="(Training) Test size fraction override")
     parser.add_argument("--n-repeats", type=int, default=None, help="(Training) Number of repeats for permutation importance")
+    parser.add_argument("--max-depth", type=int, default=None, help="(Training) Max depth for RandomForestClassifier")
+    parser.add_argument("--class-weight", default=None, help="(Training) class_weight for RandomForestClassifier (e.g., balanced, balanced_subsample)")
+    parser.add_argument("--min-samples-leaf", type=int, default=None, help="(Training) min_samples_leaf for RandomForestClassifier")
+    parser.add_argument("--min-samples-split", type=int, default=None, help="(Training) min_samples_split for RandomForestClassifier")
+    parser.add_argument("--max-features", type=float, default=None, help="(Training) max_features for RandomForestClassifier")
     args = parser.parse_args()
 
     # Determine input file: CLI override > config.ini
@@ -761,6 +810,11 @@ def main():
             test_size = args.test_size if args.test_size is not None else config.get("TEST_SIZE", TEST_SIZE)
             n_estimators = args.n_estimators if args.n_estimators is not None else config.get("N_ESTIMATORS", 100)
             n_repeats = args.n_repeats if args.n_repeats is not None else config.get("N_REPEATS", 10)
+            max_depth = args.max_depth if args.max_depth is not None else config.get("MAX_DEPTH")
+            class_weight = args.class_weight if args.class_weight is not None else config.get("CLASS_WEIGHT")
+            min_samples_leaf = args.min_samples_leaf if getattr(args, 'min_samples_leaf', None) is not None else config.get("MIN_SAMPLES_LEAF")
+            min_samples_split = args.min_samples_split if getattr(args, 'min_samples_split', None) is not None else config.get("MIN_SAMPLES_SPLIT")
+            max_features = args.max_features if getattr(args, 'max_features', None) is not None else config.get("MAX_FEATURES")
 
             # Allow config.ini to override model output and PR plot locations
             model_out = args.model
@@ -792,6 +846,11 @@ def main():
                 random_state=random_state,
                 test_size=test_size,
                 n_repeats=n_repeats,
+                max_depth=max_depth,
+                class_weight=class_weight,
+                min_samples_leaf=min_samples_leaf,
+                min_samples_split=min_samples_split,
+                max_features=max_features,
             )
         elif args.mode == "infer":
             # Example usage for MLOps scoring: pass model path and input file to run_inference

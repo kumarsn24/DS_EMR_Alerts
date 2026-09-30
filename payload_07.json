@@ -1,0 +1,16 @@
+{
+  "records": [
+    { 
+    "PATIENT_ID": 2324,
+    "TXN_DT": "2022-06-21",
+    "INSURANCE_TYPE": "COMMERCIAL",
+    "NO_OF_CONDN": 68,
+    "NO_OF_SYMPT": 24,
+    "NO_OF_CONTRD": 47,
+    "PAT_GENDER": "F",
+    "PHY_STATE": "UNKNOWN",
+    "PHY_PHYSICIAN_TYPE": "UNKNOWN",
+    "PAT_AGE": 44      
+    }
+  ]
+}

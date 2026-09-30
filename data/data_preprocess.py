@@ -463,7 +463,19 @@ def generate_cleansed_output(base_path: str, output_folder: str, config_path: st
             # Coerce to numeric (year); if a full date is present, attempt to extract year
             vals = df_out[birth_col]
             # Robust handling: prefer numeric year values when they look like a year
-            current_year = pd.Timestamp.now().year
+            # Derive current_year from available transaction dates (TXN_DT) if present
+            if "TXN_DT" in df_out.columns:
+                try:
+                    txn_years = pd.to_datetime(df_out["TXN_DT"], errors="coerce").dt.year
+                    if txn_years.notna().any():
+                        # Use the latest transaction year as the reference 'current' year
+                        current_year = int(txn_years.max())
+                    else:
+                        current_year = pd.Timestamp.now().year
+                except Exception:
+                    current_year = pd.Timestamp.now().year
+            else:
+                current_year = pd.Timestamp.now().year
 
             # Try to coerce to numeric first (handles plain year values like 1987)
             numeric_years = pd.to_numeric(vals, errors="coerce")

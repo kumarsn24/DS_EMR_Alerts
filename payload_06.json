@@ -1,0 +1,16 @@
+{
+  "records": [
+    { 
+    "PATIENT_ID": 3755,
+    "TXN_DT": "2022-06-23",
+    "INSURANCE_TYPE": "MEDICARE",
+    "NO_OF_CONDN": 49,
+    "NO_OF_SYMPT": 12,
+    "NO_OF_CONTRD": 0,
+    "PAT_GENDER": "F",
+    "PHY_STATE": "CA",
+    "PHY_PHYSICIAN_TYPE": "FAMILY MEDICINE",
+    "PAT_AGE": 82
+    }
+  ]
+}

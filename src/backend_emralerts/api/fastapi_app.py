@@ -102,7 +102,21 @@ def resolve_model_path(config_ini_path: Optional[str] = None) -> None:
     If config_ini_path is a directory, it will look for config.ini inside it.
     This function updates module-level MODEL_PATH, MODEL_FILENAME, and MODEL_SOURCE.
     """
+    
+    cur_path = os.path.dirname(os.path.dirname(__file__))
+    repo_root=Path(cur_path).parent.parent
+    candidate = os.path.join(repo_root, "configs")
+
     global MODEL_PATH, MODEL_FILENAME, MODEL_SOURCE
+
+    logger.info("Configuration Path from Repo Root; Config_Path=%s", candidate)
+
+    if os.path.exists(candidate):
+       config_ini_path = candidate
+    else:
+       # Fallback to file located next to this script
+       base_dir = os.path.dirname(__file__)
+       config_ini_path = os.path.join(base_dir, "config.ini")
 
     _env_model = os.environ.get("MODEL_PATH")
     MODEL_PATH = None
@@ -336,6 +350,19 @@ def _extract_model_info(pipeline, model_path: str) -> Dict[str, Any]:
 @app.on_event("startup")
 def startup_load_model():
     try:
+        repo_root = os.path.dirname(os.path.dirname(__file__))
+        candidate = os.path.join(repo_root, "configs", "config.ini")
+
+        resolve_model_path(candidate)
+
+        # If model file not present, do not fail startup; run without a model
+        mp = Path(MODEL_PATH)
+        if not mp.exists():
+            logger.warning("Model file not found at startup: %s. Starting app without loaded model.", MODEL_PATH)
+            app.state.pipeline = None
+            app.state.model_info = {}
+            return
+
         app.state.pipeline = load_pipeline(MODEL_PATH)
         # extract metadata
         app.state.model_info = _extract_model_info(app.state.pipeline, MODEL_PATH)

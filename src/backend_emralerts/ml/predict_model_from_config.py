@@ -200,6 +200,116 @@ def predict_all(pipeline, df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def publish_output_columns(df: pd.DataFrame, cfg: configparser.ConfigParser, out_filename: str = "model_output.csv") -> Path:
+    """Select columns defined by PUBLISH_COLS in config and write CSV.
+
+    cfg: parsed ConfigParser returned by load_config
+    PUBLISH_COLS should be a comma-separated list in the DEFAULT or [ml] section.
+    If PUBLISH_COLS is missing, writes the full dataframe to out_filename.
+
+    Returns Path to the written CSV.
+    """
+    try:
+        section = cfg["ml"] if "ml" in cfg else cfg["DEFAULT"] if "DEFAULT" in cfg else cfg
+    except Exception:
+        section = cfg
+
+    # Resolve ML input path from config to locate Cleansed_Output.csv in same folder
+    ml_input = None
+    try:
+        ml_input = section.get("ML_INPUT_DATAFILE")
+    except Exception:
+        ml_input = None
+    if not ml_input:
+        try:
+            ml_input = cfg.get("DEFAULT", "ML_INPUT_DATAFILE")
+        except Exception:
+            ml_input = None
+
+    cleansed_filename = "Cleansed_Output.csv"
+    try:
+        configured_name = section.get("OUTPUT_FILENAME")
+        if configured_name:
+            cleansed_filename = configured_name
+    except Exception:
+        pass
+
+    if ml_input:
+        cleansed_path = Path(ml_input).resolve().parent / cleansed_filename
+    else:
+        cleansed_path = Path(cleansed_filename)
+
+    publish_df = df.copy()
+    try:
+        if cleansed_path.exists():
+            cleansed_df = pd.read_csv(cleansed_path)
+            if "PATIENT_ID" in publish_df.columns and "PATIENT_ID" in cleansed_df.columns:
+                publish_df = publish_df.merge(cleansed_df, on="PATIENT_ID", how="inner", suffixes=("", "_cleansed"))
+            else:
+                common_cols = [c for c in publish_df.columns if c in cleansed_df.columns]
+                if common_cols:
+                    publish_df = publish_df.merge(cleansed_df, on=common_cols, how="inner", suffixes=("", "_cleansed"))
+                else:
+                    logger.warning("No common columns found to join %s; using predictions only.", cleansed_path)
+        else:
+            logger.info("Cleansed output file not found at %s; using predictions only.", cleansed_path)
+    except Exception:
+        logger.exception("Failed to read/join cleansed output file %s; using predictions only.", cleansed_path)
+
+    publish_raw = None
+    try:
+        publish_raw = section.get("PUBLISH_COLS")
+    except Exception:
+        publish_raw = None
+
+    sel = None
+    if publish_raw:
+        raw = str(publish_raw).strip()
+        parsed_cols = None
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, list):
+                parsed_cols = [str(x).strip() for x in parsed if str(x).strip()]
+        except Exception:
+            parsed_cols = None
+        if parsed_cols is None:
+            normalized = raw
+            if normalized.startswith("[") and normalized.endswith("]"):
+                normalized = normalized[1:-1]
+            parsed_cols = [p.strip().strip('"').strip("'") for p in normalized.split(",") if p.strip()]
+        seen = set()
+        sel = []
+        for col in parsed_cols:
+            if col and col not in seen:
+                sel.append(col)
+                seen.add(col)
+
+    if sel:
+        sel_existing = [c for c in sel if c in publish_df.columns]
+        if not sel_existing:
+            logger.warning("PUBLISH_COLS configured but no matching columns found after join. Writing full output instead.")
+            sel_existing = list(publish_df.columns)
+    else:
+        sel_existing = list(publish_df.columns)
+
+    out_path = Path(out_filename)
+    # ensure parent exists
+    if out_path.parent and not out_path.parent.exists():
+        try:
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            logger.exception("Failed to create parent directory for %s", out_path)
+
+    try:
+        publish_df.loc[:, sel_existing].to_csv(out_path, index=False)
+        logger.info("Wrote model output CSV to %s (columns: %s)", out_path, sel_existing)
+    except Exception:
+        logger.exception("Failed to write model output CSV to %s", out_path)
+        raise
+
+    return out_path
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Load model from config and run predictions for ML_INPUT_DATAFILE")
     parser.add_argument("--config", default="config.ini", help="Path to config.ini")
@@ -256,6 +366,13 @@ def main(argv=None):
     except Exception as e:
         logger.exception("Failed to write output JSON: %s", e)
         sys.exit(6)
+
+    # Additionally publish configured columns to model_output.csv if requested
+    try:
+        publish_out = Path(ml_input).resolve().parent / "model_output.csv"
+        publish_output_columns(out_df, cfg, out_filename=str(publish_out))
+    except Exception as e:
+        logger.exception("Failed to publish model_output.csv: %s", e)
 
 
 if __name__ == "__main__":
